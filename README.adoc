@@ -1,0 +1,280 @@
+= Spring Boot / Security
+
+== Introduction
+
+*Scenario:* It is a beautiful Sunday morning and you decide to pick up some coding and want create an admin panel for
+a web page. On the web you find a beautiful Bootstrap starting template but how get this template working together with
+Spring Boot / Thymeleaf. You start building and the page looks great, now the only you need to do is to integrate
+it with your companies authentication mechanism.
+
+This tutorial will take you from a form based authentication towards an integration with Microsoft Active Directory as
+authentication
+
+== Setup
+
+
+Go to https://start.spring.io and include the following dependencies: Web, Thymeleaf and Security.
+Extract the zip file and open the project with for example IntelliJ.
+
+Create a the following controller:
+
+[source]
+----
+@Controller
+public class HomeController {
+
+    @GetMapping("/")
+    public String homePage(Model model) {
+        return "index";
+    }
+}
+----
+
+in `static/templates` create a file called `index.html`
+
+[source]
+----
+<html>
+<body>
+<h1>Welcome to my page</h1>
+</body>
+
+
+</html>
+----
+
+Now start the application and point your browser to: http://localhost:8080
+A login page will be displayed this is default behavior added by Spring Security, the username is `user` and the
+password is generated during the start of the application and can be found in the console:
+
+[source]
+----
+INFO 10712 --- [  restartedMain] .s.s.UserDetailsServiceAutoConfiguration :
+
+Using generated security password: 27a47ee1-8506-48a4-b3dc-bf486eec1eb0
+----
+
+For more information see: https://docs.spring.io/spring-boot/docs/current/reference/html/boot-features-security.html
+
+Try to login and you will see the `index.html` page.
+
+
+TIP: Use the initial commit from this repository to get the same baseline
+
+
+== Step 1: Add the new Bootstrap template
+
+For this code base we use https://startbootstrap.com/templates/sb-admin/ download the template unzip it and copy
+the folders `css, js, scss, vendor` folders to `resources/static`
+Place the html files in the `templates` folder, after a restart you still see the standard login page and after
+login the new template will be used
+
+=== Replacing the login page
+
+In order to replace the standard login page with the new `login.html` page the following steps are necessary, extend
+the `HomeController` with:
+
+[source]
+----
+ @GetMapping("/login")
+ public String login() {
+   return "login";
+ }
+----
+
+NOTE: There are other ways to map static files using a view resolver but for now we add an extra endpoint.
+
+The next step is to add a security configuration:
+
+[source]
+----
+@EnableWebSecurity
+public class SecurityConfiguration extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+                .authorizeRequests()
+                  .anyRequest().authenticated()
+                  .and()
+                .formLogin()
+                  .loginPage("/login")
+                  .permitAll();
+    }
+}
+----
+
+Now if we reload the page the new login page will be displayed but the styling will look awful. That's because we now
+provided our own security configuration all the standard provided configuration is no longer applied.
+In order to fix the styling add:
+
+[source]
+----
+        http
+                .authorizeRequests()
+                  .antMatchers("/css/**", "/js/**", "/scss/**", "/vendor/**").permitAll()
+                  .anyRequest().authenticated()
+                ...
+----
+
+This will tell the security configuration all those resources are available without authentication. Let's reload the
+app and try to login. You will see the correct styling being applied however logging in does not work yet.
+
+=== Fix the login procedure
+
+Because we are using Thymeleaf as stated above the `login.html` page needs some tweaks:
+
+[source]
+----
+<html  xmlns:th="http://www.thymeleaf.org">
+
+...
+
+<form th:action="@{/login}" method="post">
+----
+
+and replace:
+
+[source]
+----
+<a class="btn btn-primary btn-block" href="index.html">Login</a>
+----
+
+with
+
+[source]
+----
+<button class="btn btn-primary btn-block" type="submit">Login</button>
+----
+
+Reload the application and since the app uses `name` and not an e-mail address in the login page we have to change
+some of the configuration:
+
+[source]
+----
+ @Bean
+ public UserDetailsService userDetailsService() throws Exception {
+    InMemoryUserDetailsManager manager = new InMemoryUserDetailsManager();
+    manager.createUser(User.withDefaultPasswordEncoder().username("test@test.com").password("password").roles("USER").build());
+    return manager;
+ }
+----
+
+IMPORTANT: in a real live application the above piece of code should not be used!
+
+After restarting the app again and providing the correct credentials the page will be redirected again to `/login`. Let's put a breakpoint
+in `UsernamePasswordAuthenticationFilter` and follow the flow:
+
+[source]
+----
+    private String usernameParameter = "username";
+    private String passwordParameter = "password";
+    private boolean postOnly = true;
+
+    public UsernamePasswordAuthenticationFilter() {
+        super(new AntPathRequestMatcher("/login", "POST"));
+    }
+
+    public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException {
+        if (this.postOnly && !request.getMethod().equals("POST")) {
+            throw new AuthenticationServiceException("Authentication method not supported: " + request.getMethod());
+        } else {
+            String username = this.obtainUsername(request);
+            String password = this.obtainPassword(request);
+            if (username == null) {
+                username = "";
+            }
+
+            if (password == null) {
+                password = "";
+            }
+
+            username = username.trim();
+            UsernamePasswordAuthenticationToken authRequest = new UsernamePasswordAuthenticationToken(username, password);
+            this.setDetails(request, authRequest);
+            return this.getAuthenticationManager().authenticate(authRequest);
+        }
+    }
+
+    protected String obtainPassword(HttpServletRequest request) {
+        return request.getParameter(this.passwordParameter);
+    }
+
+    protected String obtainUsername(HttpServletRequest request) {
+        return request.getParameter(this.usernameParameter);
+    }
+----
+
+The username and password cannot be obtained from the request, let's fix this by adding:
+
+[source]
+----
+<input type="email" id="inputEmail" name="username" ...>
+<input type="password" id="inputPassword" name="password" ...>
+----
+
+to the html elements. And now finally the login page works!!
+
+NOTE: you can change the names of the parameters by setting `usernameParameter()` on the form login in the `SecurityConfiguration`.
+
+
+=== Showing errors
+
+In order to show errors the following snippet can be added to `login.html`:
+
+[source]
+----
+ <div th:if="${param.error}" class="alert alert-error">
+   Invalid username and password.
+ </div>
+ <div th:if="${param.logout}" class="alert alert-success">
+   You have been logged out.
+ </div>
+----
+
+== Moving toward
+
+Now we have a basic understanding on how Spring Security works within an application and we added
+Basic Authentication we now want to integrate with OpenID Connect with Active Directory,
+OpenID Connect is an authentication protocol built on OAuth 2.0 that you can use to securely sign in a user to a web application.
+For more information see https://docs.microsoft.com/en-us/azure/active-directory/develop/v2-protocols-oidc
+
+To be able to test this we need to setup Active Directory to be able to use in our application.
+There are a couple of steps to follow which are best described here: https://azure.microsoft.com/blog/spring-security-azure-ad/
+Important is to correctly set the reply URL: http://localhost:8080/login/oauth2/code/azure
+
+In our Spring application we need to enable the OAuth flow, extend the `application.properties`
+as follows:
+
+```
+spring.security.oauth2.client.registration.azure.client-id=<<applicationId>>
+spring.security.oauth2.client.registration.azure.client-secret=<<generated_secret>>
+azure.activedirectory.tenant-id=<<applicationId>>
+azure.activedirectory.activeDirectoryGroups=unknown
+server.use-forward-headers=true
+```
+
+The setting `server.use-forward-headers` is necessary to do the redirect properly with absolute urls.
+The group does not really matter at the moment it is necessary to define otherwise the app will not
+start, however for authentication it is not necessary.
+
+And add the following dependency to the `pom.xml`
+
+[source]
+----
+<dependency>
+  <groupId>org.springframework.security</groupId>
+  <artifactId>spring-security-oauth2-client</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.springframework.security</groupId>
+  <artifactId>spring-security-oauth2-jose</artifactId>
+</dependency>
+----
+
+Remove the complete `SecurityConfiguration` class from the project as we are now only using
+`application.properties` to configure the OAuth flow.
+
+Restart the application and now will be prompted with the Microsoft login page same as you
+are used to when logging in to your Outlook inbox.
+
